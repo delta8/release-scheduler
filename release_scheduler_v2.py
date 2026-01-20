@@ -772,3 +772,19 @@ if __name__ == '__main__':
 
 # Expose Flask server for gunicorn
 server = app.server
+
+
+# Auto-collapse goals not in top 3 next openings on data load
+@callback(
+    Output('expanded-goals-store', 'data', allow_duplicate=True),
+    Input('next-openings-goals-store', 'data'),
+    prevent_initial_call='initial_duplicate'
+)
+def auto_collapse_non_top_openings(next_openings_goals):
+    """Collapse all goals except those in top 3 next openings"""
+    if not next_openings_goals:
+        raise dash.exceptions.PreventUpdate
+    
+    # Create expanded state: True only for next openings goals
+    expanded_state = {goal: True for goal in next_openings_goals}
+    return expanded_state
