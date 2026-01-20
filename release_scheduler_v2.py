@@ -375,7 +375,7 @@ app.layout = html.Div([
     dcc.Store(id='tickets-data-store'),
     dcc.Store(id='expanded-goals-store', data={}),
     dcc.Store(id='visible-goals-store', data={}),
-    dcc.Store(id='end-date-store', data='2027-01-31'),
+    dcc.Store(id='next-openings-goals-store', data=[]),
     
     html.Div([
         html.H3('🚀 Next Openings', style={'marginBottom': 15, 'color': '#2c3e50'}),
@@ -457,23 +457,7 @@ app.layout = html.Div([
             html.Button('Collapse All', id='collapse-all-btn', n_clicks=0, style={'padding': '5px 10px'})
         ], style={'marginBottom': 15}),
 
-        html.Div([
-            html.Label('Timeline End Date:', style={'fontWeight': 'bold', 'marginRight': 10}),
-            dcc.Slider(
-                id='end-date-slider',
-                min=0,
-                max=10,
-                value=10,
-                marks={
-                    0: 'Jul 2025', 1: 'Aug', 2: 'Sep', 3: 'Oct', 4: 'Nov', 5: 'Dec',
-                    6: 'Jan 2026', 7: 'Feb', 8: 'Mar', 9: 'Apr', 10: 'May 2026'
-                },
-                tooltip={"placement": "bottom", "always_visible": True},
-                step=1,
-                included=False
-            ),
-            html.Div(id='end-date-display', style={'marginTop': 10, 'fontSize': 12, 'color': '#555'})
-        ], style={})
+
     ], style={'padding': 15, 'backgroundColor': '#f8f9fa', 'borderRadius': 5}),
     
     html.Div(id='goal-toggle-buttons', style={'padding': 10, 'marginBottom': 15, 'backgroundColor': '#f0f0f0', 'borderRadius': 5}),
@@ -487,21 +471,78 @@ app.layout = html.Div([
 ], style={'padding': 25, 'fontFamily': 'Arial, sans-serif', 'backgroundColor': '#ffffff'})
 
 @callback(
-    Output('next-openings-display', 'children'),
+    [Output('next-openings-display', 'children'),
+     Output('next-openings-goals-store', 'data')],
     Input('scheduler-data-store', 'data'),
     prevent_initial_call=False
 )
 def update_next_openings(stored_data):
     """Update the next openings display when scheduler data is loaded"""
     if not stored_data:
-        return html.Div("Upload AHA schedules to see next openings.", style={'textAlign': 'center', 'color': '#7f8c8d', 'fontSize': 14})
-    
+        return (html.Div("Upload AHA schedules to see next openings.", style={'textAlign': 'center', 'color': '#7f8c8d', 'fontSize': 14}),
+                [])
     try:
         df = pd.read_json(stored_data, orient='split')
         scheduler_df = process_scheduler_data(df, end_date=None)
-        return get_next_openings(scheduler_df)
+        
+        # Get next openings HTML display
+        display = get_next_openings(scheduler_df)
+        
+        # Extract the goal names from top 3
+        if scheduler_df.empty:
+            return display, []
+        
+        # Exclude FTO & Workload schedules completely from planning
+        working_schedules = scheduler_df[scheduler_df['Is_FTO_Workload'] == False].copy()
+        
+        if working_schedules.empty:
+            return display, []
+        
+        # Separate remaining PTO/FTO from other schedules
+        pto_schedules = working_schedules[working_schedules['Schedule'].str.contains('FTO', na=False)].copy()
+        non_pto_schedules = working_schedules[~working_schedules['Schedule'].str.contains('FTO', na=False)].copy()
+        
+        # Get latest end date for each goal from NON-PTO schedules only
+        goal_last_dates = non_pto_schedules.groupby('Goal')['End Date'].max()
+        
+        # Calculate openings: 2 days after last non-PTO schedule
+        adjusted_openings = {}
+        for goal, last_date in goal_last_dates.items():
+            opening_date = last_date + pd.Timedelta(days=2)
+            
+            # Check if opening date falls within any PTO period
+            if not pto_schedules.empty:
+                goal_pto = pto_schedules[pto_schedules['Goal'] == goal].copy()
+                
+                for _, pto_row in goal_pto.iterrows():
+                    pto_start = pto_row['Start Date']
+                    pto_end = pto_row['End Date']
+                    pto_duration = (pto_end - pto_start).days
+                    
+                    # If opening falls within PTO and PTO is > 3 days, push past it
+                    if opening_date >= pto_start and opening_date <= pto_end:
+                        if pto_duration > 3:
+                            opening_date = pto_end + pd.Timedelta(days=1)
+            
+            adjusted_openings[goal] = opening_date
+        
+        # Convert to Series and sort
+        goal_openings_series = pd.Series(adjusted_openings)
+        goal_openings_series = goal_openings_series.sort_values()
+        
+        # Filter out excluded ones
+        excluded = {'AR', 'SD', 'RR', 'BW'}
+        filtered_openings = goal_openings_series[[g.replace('I-', '') not in excluded for g in goal_openings_series.index]]
+        
+        if len(filtered_openings) == 0:
+            return display, []
+        
+        # Get top 3 from eligible people and extract goal names
+        top_3_goals = filtered_openings.head(3).index.tolist()
+        
+        return display, top_3_goals
     except Exception as e:
-        return html.Div(f"Error: {str(e)}", style={'textAlign': 'center', 'color': '#e74c3c'})
+        return html.Div(f"Error: {str(e)}", style={'textAlign': 'center', 'color': '#e74c3c'}), []
 
 @callback(
     [Output('tickets-data-store', 'data'),
@@ -582,22 +623,6 @@ def init_goal_filter(stored_data):
     return [{'label': 'All Goals', 'value': 'All'}] + [{'label': g.replace('I-', ''), 'value': g} for g in goals]
 
 @callback(
-    [Output('end-date-store', 'data'),
-     Output('end-date-display', 'children')],
-    Input('end-date-slider', 'value'),
-    prevent_initial_call=False
-)
-def update_end_date(slider_value):
-    """Convert slider value to date"""
-    dates = [
-        '2025-07-31', '2025-08-31', '2025-09-30', '2025-10-31', '2025-11-30', '2025-12-31',
-        '2026-01-31', '2026-02-28', '2026-03-31', '2026-04-30', '2026-05-31'
-    ]
-    end_date = dates[slider_value] if slider_value < len(dates) else '2026-05-31'
-    display = f"Viewing through {pd.to_datetime(end_date).strftime('%B %Y')}"
-    return end_date, display
-
-@callback(
     Output('visible-goals-store', 'data', allow_duplicate=True),
     Input('scheduler-data-store', 'data'),
     prevent_initial_call='initial_duplicate'
@@ -623,11 +648,10 @@ def init_visible_goals(stored_data):
      Input('goal-filter-dropdown', 'value'),
      Input('visible-goals-store', 'data'),
      Input('expanded-goals-store', 'data'),
-     Input('end-date-store', 'data'),
      Input('tickets-data-store', 'data')],
     prevent_initial_call=False
 )
-def update_chart(stored_data, selected_goal, visible_goals, expanded_goals, end_date, tickets_data):
+def update_chart(stored_data, selected_goal, visible_goals, expanded_goals, tickets_data):
     try:
         if stored_data:
             df = pd.read_json(stored_data, orient='split')
@@ -636,7 +660,7 @@ def update_chart(stored_data, selected_goal, visible_goals, expanded_goals, end_
         else:
             return go.Figure().add_annotation(text='No data'), html.Div(), html.Div()
         
-        scheduler_df = process_scheduler_data(df, end_date=end_date or '2027-01-31')
+        scheduler_df = process_scheduler_data(df, end_date='2027-01-31')
         
         # Process tickets
         tickets_df = pd.DataFrame()
