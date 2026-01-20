@@ -683,7 +683,7 @@ def update_chart(stored_data, selected_goal, visible_goals, expanded_goals, tick
         if not visible_goals_set:
             visible_goals_set = set(scheduler_df['Goal'].unique())
         
-        fig = create_gantt_chart(scheduler_df, expanded_goals or {}, visible_goals_set, end_date or '2026-05-31', tickets_df)
+        fig = create_gantt_chart(scheduler_df, expanded_goals or {}, visible_goals_set, '2026-05-31', tickets_df)
         
         total_schedules = len(scheduler_df)
         total_goals = len(scheduler_df['Goal'].unique())
