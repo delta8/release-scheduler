@@ -769,3 +769,6 @@ def collapse_all(n_clicks, stored_data):
 
 if __name__ == '__main__':
     app.run_server(debug=False, host='127.0.0.1', port=8052)
+
+# Expose Flask server for gunicorn
+server = app.server
